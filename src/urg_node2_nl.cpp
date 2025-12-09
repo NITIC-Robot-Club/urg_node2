@@ -21,7 +21,18 @@ UrgNode2NL::UrgNode2NL(const rclcpp::NodeOptions & options) : Node("urg_node2_nl
   if (states_.use_multiecho_) {
     // TODO: implement multiecho func
   } else {
-    scan_pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>("scan", rclcpp::QoS(20));
+    if (publish_laserscan_) {
+      laserscan_pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>("scan", rclcpp::QoS(20));
+    }
+    if (publish_pointcloud2_) {
+      pointcloud2_pub_ =
+        this->create_publisher<sensor_msgs::msg::PointCloud2>("pointcloud2", rclcpp::QoS(20));
+    }
+    if (!publish_laserscan_ && !publish_pointcloud2_) {
+      RCLCPP_FATAL(
+        this->get_logger(), "No publisher is enabled. Please enable at least one publisher.");
+      return;
+    }
   }
 
   RCLCPP_INFO(this->get_logger(), "Initialize complete. Starting scan thread...");
@@ -37,7 +48,13 @@ UrgNode2NL::~UrgNode2NL(void)
   if (states_.use_multiecho_) {
     // TODO: implement multiecho func
   } else {
-    scan_pub_.reset();
+    if (publish_laserscan_) {
+      laserscan_pub_.reset();
+    }
+
+    if (publish_pointcloud2_) {
+      pointcloud2_pub_.reset();
+    }
   }
 }
 
@@ -61,6 +78,9 @@ void UrgNode2NL::init_urgnode2_parameters(void)
   config_.angle_max_ = declare_parameter<double>("angle_max", M_PI);
   config_.skip_ = declare_parameter<int>("skip", 0);
   config_.cluster_ = declare_parameter<int>("cluster", 1);
+
+  publish_laserscan_ = declare_parameter<bool>("publish_laserscan", true);
+  publish_pointcloud2_ = declare_parameter<bool>("publish_pointcloud2", true);
 
   // 範囲チェック
   config_.angle_min_ = (config_.angle_min_ < -M_PI)
@@ -290,7 +310,7 @@ bool UrgNode2NL::is_multiecho_supported(void)
   return true;
 }
 
-bool UrgNode2NL::create_scan_message(sensor_msgs::msg::LaserScan::UniquePtr & msg)
+bool UrgNode2NL::create_laserscan_message(sensor_msgs::msg::LaserScan::UniquePtr & msg)
 {
   msg->header.frame_id = sensor_data_.header_frame_id_;
   msg->angle_min = sensor_data_.topic_angle_min_;
@@ -342,6 +362,33 @@ bool UrgNode2NL::create_scan_message(sensor_msgs::msg::LaserScan::UniquePtr & ms
   return true;
 }
 
+void UrgNode2NL::convert_laserscan_to_pointcloud2(
+  const sensor_msgs::msg::LaserScan::UniquePtr & laserscan_msg,
+  sensor_msgs::msg::PointCloud2::UniquePtr & pointcloud2_msg)
+{
+  pointcloud2_msg->header = laserscan_msg->header;
+
+  sensor_msgs::PointCloud2Modifier pointcloud2_modifier(*pointcloud2_msg);
+  pointcloud2_modifier.setPointCloud2FieldsByString(1, "xyz");
+  pointcloud2_modifier.resize(laserscan_msg->ranges.size());
+
+  sensor_msgs::PointCloud2Iterator<float> iter_x(*pointcloud2_msg, "x");
+  sensor_msgs::PointCloud2Iterator<float> iter_y(*pointcloud2_msg, "y");
+  sensor_msgs::PointCloud2Iterator<float> iter_z(*pointcloud2_msg, "z");
+
+  for (size_t i = 0; i < laserscan_msg->ranges.size(); ++i, ++iter_x, ++iter_y, ++iter_z) {
+    float r = laserscan_msg->ranges[i];
+    if (std::isnan(r) || r < laserscan_msg->range_min || r > laserscan_msg->range_max) {
+      *iter_x = *iter_y = *iter_z = std::numeric_limits<float>::quiet_NaN();
+      continue;
+    }
+    float angle = laserscan_msg->angle_min + i * laserscan_msg->angle_increment;
+    *iter_x = r * std::cos(angle);
+    *iter_y = r * std::sin(angle);
+    *iter_z = 0.0;
+  }
+}
+
 void UrgNode2NL::update_sensor_states(void)
 {
   // update sensor states
@@ -390,8 +437,16 @@ void UrgNode2NL::scan_thread_func(void)
       } else {
         sensor_msgs::msg::LaserScan::UniquePtr msg =
           std::make_unique<sensor_msgs::msg::LaserScan>();
-        if (create_scan_message(msg)) {
-          scan_pub_->publish(std::move(msg));
+        if (create_laserscan_message(msg)) {
+          if (publish_pointcloud2_) {
+            sensor_msgs::msg::PointCloud2::UniquePtr pc2_msg =
+              std::make_unique<sensor_msgs::msg::PointCloud2>();
+            convert_laserscan_to_pointcloud2(msg, pc2_msg);
+            pointcloud2_pub_->publish(std::move(pc2_msg));
+          }
+          if (publish_laserscan_) {
+            laserscan_pub_->publish(std::move(msg));
+          }
         } else {
           RCLCPP_WARN(get_logger(), "could not get single echo scan.");
           states_.error_count_++;

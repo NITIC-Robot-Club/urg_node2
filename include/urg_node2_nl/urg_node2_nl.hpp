@@ -8,6 +8,8 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
+#include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "urg_sensor.h"
 #include "urg_utils.h"
 
@@ -98,7 +100,10 @@ private:
   bool is_multiecho_supported(void);
   rclcpp::Duration get_angular_time_offset(void);
 
-  bool create_scan_message(sensor_msgs::msg::LaserScan::UniquePtr & msg);
+  bool create_laserscan_message(sensor_msgs::msg::LaserScan::UniquePtr & msg);
+  void convert_laserscan_to_pointcloud2(
+    const sensor_msgs::msg::LaserScan::UniquePtr & laserscan_msg,
+    sensor_msgs::msg::PointCloud2::UniquePtr & pointcloud2_msg);
 
   void scan_thread_func(void);
   void start_thread(void);
@@ -114,7 +119,11 @@ private:
   std::thread scan_thread_;
   std::atomic_bool close_thread_flag_;
 
-  std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::LaserScan>> scan_pub_;
+  bool publish_laserscan_;
+  bool publish_pointcloud2_;
+
+  std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::LaserScan>> laserscan_pub_;
+  std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud2_pub_;
   static constexpr int URG_NODE2_NL_MAX_DATA_SIZE{5000};
 };
 }  // namespace urg_node2_nl
