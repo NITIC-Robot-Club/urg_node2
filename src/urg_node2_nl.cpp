@@ -81,6 +81,7 @@ void UrgNode2NL::init_urgnode2_parameters(void)
 
   publish_laserscan_ = declare_parameter<bool>("publish_laserscan", true);
   publish_pointcloud2_ = declare_parameter<bool>("publish_pointcloud2", true);
+  reverse_ = declare_parameter<bool>("reverse", false);
 
   // 範囲チェック
   config_.angle_min_ = (config_.angle_min_ < -M_PI)
@@ -348,13 +349,21 @@ bool UrgNode2NL::create_laserscan_message(sensor_msgs::msg::LaserScan::UniquePtr
   }
 
   for (int i = 0; i < num_beams; i++) {
+    
+    int data_index;
+    if(reverse_) {
+      data_index = num_beams - i - 1;
+    } else {
+      data_index = i;
+    }
+
     if (sensor_data_.distance_[i] != 0) {
-      msg->ranges[i] = static_cast<float>(sensor_data_.distance_[i]) / 1000.0;
+      msg->ranges[data_index] = static_cast<float>(sensor_data_.distance_[i]) / 1000.0;
       if (states_.use_intensity_) {
-        msg->intensities[i] = sensor_data_.intensity_[i];
+        msg->intensities[data_index] = sensor_data_.intensity_[i];
       }
     } else {
-      msg->ranges[i] = std::numeric_limits<float>::quiet_NaN();
+      msg->ranges[data_index] = std::numeric_limits<float>::quiet_NaN();
       continue;
     }
   }

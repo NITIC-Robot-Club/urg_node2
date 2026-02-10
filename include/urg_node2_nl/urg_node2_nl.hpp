@@ -121,6 +121,7 @@ private:
 
   bool publish_laserscan_;
   bool publish_pointcloud2_;
+  bool reverse_;
 
   std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::LaserScan>> laserscan_pub_;
   std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud2_pub_;
