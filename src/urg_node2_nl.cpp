@@ -2,6 +2,8 @@
 
 #include <rcl/time.h>
 
+#include <cmath>
+
 #include "urg_connection.h"
 #include "urg_sensor.h"
 #include "urg_utils.h"
@@ -185,6 +187,10 @@ bool UrgNode2NL::connect(void)
   }
 
   states_.is_connected_ = true;
+  states_.hardware_clock_ = 0.0;
+  states_.last_hardware_time_stamp_ = 0;
+  states_.hardware_clock_adj_ = 0.0;
+  states_.adj_count_ = 0;
 
   std::stringstream ss;
   ss << "Connected to a ";
@@ -314,13 +320,21 @@ bool UrgNode2NL::is_multiecho_supported(void)
 bool UrgNode2NL::create_laserscan_message(sensor_msgs::msg::LaserScan::UniquePtr & msg)
 {
   msg->header.frame_id = sensor_data_.header_frame_id_;
-  msg->angle_min = sensor_data_.topic_angle_min_;
-  msg->angle_max = sensor_data_.topic_angle_max_;
-  msg->angle_increment = sensor_data_.topic_angle_increment_;
-  msg->scan_time = sensor_data_.scan_period_;
-  msg->time_increment = sensor_data_.topic_time_increment_;
-  msg->range_min = sensor_data_.topic_range_min_;
-  msg->range_max = sensor_data_.topic_range_max_;
+  if (reverse_) {
+    // Preserve acquisition order so header.stamp + i*time_increment is the
+    // acquisition time of ranges[i]. Reverse the angle axis instead of the data.
+    msg->angle_min = static_cast<float>(sensor_data_.topic_angle_max_);
+    msg->angle_max = static_cast<float>(sensor_data_.topic_angle_min_);
+    msg->angle_increment = static_cast<float>(-sensor_data_.topic_angle_increment_);
+  } else {
+    msg->angle_min = static_cast<float>(sensor_data_.topic_angle_min_);
+    msg->angle_max = static_cast<float>(sensor_data_.topic_angle_max_);
+    msg->angle_increment = static_cast<float>(sensor_data_.topic_angle_increment_);
+  }
+  msg->scan_time = static_cast<float>(sensor_data_.scan_period_);
+  msg->time_increment = static_cast<float>(sensor_data_.topic_time_increment_);
+  msg->range_min = static_cast<float>(sensor_data_.topic_range_min_);
+  msg->range_max = static_cast<float>(sensor_data_.topic_range_max_);
 
   int num_beams = 0;
   long time_stamp = 0;
@@ -338,32 +352,25 @@ bool UrgNode2NL::create_laserscan_message(sensor_msgs::msg::LaserScan::UniquePtr
   }
 
   if (config_.synchronize_time_) {
-    // TODO: time synchronize func
+    system_time_stamp = get_synchronized_time(time_stamp, system_time_stamp);
   }
   msg->header.stamp =
     system_time_stamp + states_.system_latency_ + states_.user_latency_ + get_angular_time_offset();
 
-  msg->ranges.resize(num_beams);
+  const size_t beam_count = static_cast<size_t>(num_beams);
+  msg->ranges.resize(beam_count);
   if (states_.use_intensity_) {
-    msg->intensities.resize(num_beams);
+    msg->intensities.resize(beam_count);
   }
 
-  for (int i = 0; i < num_beams; i++) {
-    
-    int data_index;
-    if(reverse_) {
-      data_index = num_beams - i - 1;
-    } else {
-      data_index = i;
-    }
-
+  for (size_t i = 0; i < beam_count; i++) {
     if (sensor_data_.distance_[i] != 0) {
-      msg->ranges[data_index] = static_cast<float>(sensor_data_.distance_[i]) / 1000.0;
+      msg->ranges[i] = static_cast<float>(sensor_data_.distance_[i]) / 1000.0f;
       if (states_.use_intensity_) {
-        msg->intensities[data_index] = sensor_data_.intensity_[i];
+        msg->intensities[i] = sensor_data_.intensity_[i];
       }
     } else {
-      msg->ranges[data_index] = std::numeric_limits<float>::quiet_NaN();
+      msg->ranges[i] = std::numeric_limits<float>::quiet_NaN();
       continue;
     }
   }
@@ -503,6 +510,51 @@ void UrgNode2NL::close_thread(void)
   if (scan_thread_.joinable()) {
     scan_thread_.join();
   }
+}
+
+// Convert the URG 24-bit millisecond hardware clock to system time.
+// This follows Hokuyo's upstream urg_node2 implementation. The exponential
+// moving average filters transport/scheduling jitter while preserving the
+// LiDAR clock interval and rollover behavior.
+rclcpp::Time UrgNode2NL::get_synchronized_time(
+  long time_stamp, rclcpp::Time system_time_stamp)
+{
+  rclcpp::Time stamp = system_time_stamp;
+
+  const uint32_t current_hardware_stamp = static_cast<uint32_t>(time_stamp);
+  const uint32_t previous_hardware_stamp =
+    static_cast<uint32_t>(states_.last_hardware_time_stamp_);
+  const uint32_t hardware_stamp_mask = 0x00ffffff;
+  const double delta_sec =
+    static_cast<double>(hardware_stamp_mask &
+    (current_hardware_stamp - previous_hardware_stamp)) / 1000.0;
+
+  states_.hardware_clock_ += delta_sec;
+  const double current_adjustment = stamp.seconds() - states_.hardware_clock_;
+  if (states_.adj_count_ > 0) {
+    states_.hardware_clock_adj_ =
+      states_.adj_alpha_ * current_adjustment +
+      (1.0 - states_.adj_alpha_) * states_.hardware_clock_adj_;
+  } else {
+    states_.hardware_clock_adj_ = current_adjustment;
+  }
+  states_.adj_count_++;
+  states_.last_hardware_time_stamp_ = time_stamp;
+
+  // Match upstream's warm-up period before trusting the synchronized clock.
+  if (states_.adj_count_ > 100) {
+    stamp = rclcpp::Time(
+      static_cast<int64_t>(
+        (states_.hardware_clock_ + states_.hardware_clock_adj_) * 1e9));
+    if (std::abs((stamp - system_time_stamp).seconds()) > 0.1) {
+      states_.adj_count_ = 0;
+      states_.hardware_clock_ = 0.0;
+      states_.last_hardware_time_stamp_ = 0;
+      stamp = system_time_stamp;
+      RCLCPP_WARN(get_logger(), "%s: detected clock warp, reset EMA", __func__);
+    }
+  }
+  return stamp;
 }
 
 // calc the time offset from start position

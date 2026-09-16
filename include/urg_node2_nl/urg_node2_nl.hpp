@@ -98,6 +98,7 @@ private:
   void update_sensor_states(void);
   bool is_intensity_supported(void);
   bool is_multiecho_supported(void);
+  rclcpp::Time get_synchronized_time(long time_stamp, rclcpp::Time system_time_stamp);
   rclcpp::Duration get_angular_time_offset(void);
 
   bool create_laserscan_message(sensor_msgs::msg::LaserScan::UniquePtr & msg);
