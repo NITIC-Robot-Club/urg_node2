@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <csignal>
+#include <deque>
 #include <sensor_msgs/msg/detail/laser_scan__struct.hpp>
 #include <string>
 #include <thread>
@@ -45,11 +46,22 @@ struct UrgNode2States
   std::string product_name_;
   std::string firmware_version_;
   std::string device_id_;
-  double hardware_clock_;
   long int last_hardware_time_stamp_;
-  double hardware_clock_adj_;
-  const double adj_alpha_{0.01};
-  int adj_count_;
+  uint64_t hardware_time_extended_ms_{0};
+  bool hardware_time_initialized_{false};
+  bool timestamp_clock_valid_{false};
+  uint64_t clock_anchor_device_ms_{0};
+  int64_t clock_anchor_system_ns_{0};
+  double clock_gain_{1.0};
+  rclcpp::Time last_clock_sync_{0, 0, RCL_SYSTEM_TIME};
+  struct ClockAnchor
+  {
+    uint64_t device_ms;
+    int64_t system_ns;
+  };
+  std::deque<ClockAnchor> clock_anchors_;
+  std::deque<uint64_t> scan_timestamp_history_ms_;
+  double timestamp_sync_min_rtt_sec_{0.0};
   int reconnect_count_;
   int error_count_;
   int total_error_count_;
@@ -75,6 +87,7 @@ struct UrgNode2Config
   double diagnostics_tolerance_;
   double diagnostics_window_time_;
   double time_offset_;
+  double clock_sync_interval_sec_;
   double angle_min_;
   double angle_max_;
   int skip_;
@@ -96,6 +109,10 @@ private:
   bool reconnect(void);
 
   void update_sensor_states(void);
+  bool synchronize_sensor_clock(void);
+  uint64_t extend_hardware_timestamp(long timestamp_ms);
+  rclcpp::Time map_hardware_timestamp(uint64_t timestamp_ms) const;
+  rclcpp::Time refine_scan_timestamp(uint64_t timestamp_ms, const rclcpp::Time & mapped);
   bool is_intensity_supported(void);
   bool is_multiecho_supported(void);
   rclcpp::Duration get_angular_time_offset(void);
